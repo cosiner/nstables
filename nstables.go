@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-
 	"strings"
-
 	"unicode"
+
+	"net"
+
+	"sync"
 
 	"github.com/miekg/dns"
 )
@@ -66,6 +68,12 @@ func parseNameservers(file string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	for i, server := range cfg.Servers {
+		if !strings.Contains(server, ":") {
+			cfg.Servers[i] = server + ":53"
+		}
+	}
 	return cfg.Servers, nil
 }
 
@@ -97,6 +105,30 @@ func parseHosts(file string) (map[string][]string, error) {
 	return hosts, nil
 }
 
+func separateRecords(hosts map[string][]string) (a, aaaa map[string][]net.IP, err error) {
+	a = make(map[string][]net.IP)
+	aaaa = make(map[string][]net.IP)
+
+	for ip, h := range hosts {
+		addr, err := net.ResolveIPAddr("", ip)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		var m map[string][]net.IP
+		if addr.IP.To4() != nil {
+			m = a
+		} else {
+			m = aaaa
+		}
+		for _, host := range h {
+			host = dns.Fqdn(host)
+			m[host] = append(m[host], addr.IP)
+		}
+	}
+	return a, aaaa, nil
+}
+
 func main() {
 	nameservers, err := parseNameservers(resolvFile)
 	if err != nil {
@@ -106,6 +138,32 @@ func main() {
 	if err != nil {
 		log.Fatalln(err)
 	}
+	a, aaaa, err := separateRecords(hosts)
+	if err != nil {
+		log.Fatalln(err)
+	}
+	s := Server{
+		A:           a,
+		AAAA:        aaaa,
+		Nameservers: nameservers,
+	}
 
-	fmt.Println(nameservers, hosts)
+	var wg sync.WaitGroup
+	for _, net := range []string{"tcp4", "udp4"} {
+		server := dns.Server{
+			Addr:    "127.0.0.1:1053",
+			Net:     net,
+			Handler: &s,
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			err := server.ListenAndServe()
+			if err != nil {
+				log.Println(err)
+			}
+		}()
+	}
+	wg.Wait()
 }
