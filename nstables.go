@@ -5,14 +5,12 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"log"
+	"net"
 	"strings"
+	"sync"
 	"unicode"
 
-	"net"
-
-	"sync"
-
+	"github.com/cosiner/ygo/log"
 	"github.com/miekg/dns"
 )
 
@@ -63,18 +61,28 @@ func removeElement(ss []string, match func(string) bool) []string {
 	return ss[:prev]
 }
 
-func parseNameservers(file string) ([]string, error) {
-	cfg, err := dns.ClientConfigFromFile(resolvFile)
+func parseNameservers(file, exclude string) ([]string, error) {
+	cfg, err := dns.ClientConfigFromFile(file)
 	if err != nil {
 		return nil, err
 	}
 
+	var prev int
 	for i, server := range cfg.Servers {
 		if !strings.Contains(server, ":") {
-			cfg.Servers[i] = server + ":53"
+			server += ":53"
+			cfg.Servers[i] = server
+		}
+		log.Info(server)
+		if server != exclude {
+			if prev != i {
+				cfg.Servers[prev] = cfg.Servers[i]
+			}
+			prev++
 		}
 	}
-	return cfg.Servers, nil
+
+	return cfg.Servers[:prev], nil
 }
 
 func parseHosts(file string) (map[string][]string, error) {
@@ -130,17 +138,23 @@ func separateRecords(hosts map[string][]string) (a, aaaa map[string][]net.IP, er
 }
 
 func main() {
-	nameservers, err := parseNameservers(resolvFile)
+	addr := "127.0.0.1:53"
+	nameservers, err := parseNameservers(resolvFile, addr)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
+	if len(nameservers) == 0 {
+		log.Fatal("no nameservers available")
+	}
+
+	log.Info("Nameservers:", nameservers)
 	hosts, err := parseHosts(hostsFile)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
 	a, aaaa, err := separateRecords(hosts)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
 	s := Server{
 		A:           a,
@@ -151,7 +165,7 @@ func main() {
 	var wg sync.WaitGroup
 	for _, net := range []string{"tcp4", "udp4"} {
 		server := dns.Server{
-			Addr:    "127.0.0.1:1053",
+			Addr:    addr,
 			Net:     net,
 			Handler: &s,
 		}
@@ -161,7 +175,7 @@ func main() {
 
 			err := server.ListenAndServe()
 			if err != nil {
-				log.Println(err)
+				log.Error(err)
 			}
 		}()
 	}

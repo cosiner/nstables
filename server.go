@@ -1,10 +1,12 @@
 package main
 
 import (
-	"log"
 	"net"
+	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/cosiner/ygo/log"
 	"github.com/miekg/dns"
 )
 
@@ -70,32 +72,71 @@ func (s *Server) serveHosts(w dns.ResponseWriter, r *dns.Msg) bool {
 
 func (s *Server) serveExtern(w dns.ResponseWriter, r *dns.Msg) {
 	var (
-		c  dns.Client
-		ch = make(chan *dns.Msg)
+		c   dns.Client
+		msg *dns.Msg
+
+		chmu   sync.Mutex
+		ch     = make(chan *dns.Msg, len(s.Nameservers))
+		active int32
 	)
-	defer close(ch)
 
 	for _, nameserver := range s.Nameservers {
+		atomic.AddInt32(&active, 1)
 		go func() {
-			m, _, err := c.Exchange(r, nameserver)
+			reply, _, err := c.Exchange(r, nameserver)
 			if err != nil {
-				log.Println(nameserver, err)
+				log.Error(nameserver, err)
 			}
-			ch <- m
+			if ch != nil {
+				chmu.Lock()
+				if ch != nil {
+					ch <- reply
+				}
+				chmu.Unlock()
+			}
 		}()
 
 		timer := time.NewTimer(time.Second)
-		select {
-		case <-timer.C:
-		case m := <-ch:
-			timer.Stop()
-			if m != nil {
-				s.writeMsg(w, r, m)
-				return
+		for loop := true; loop; {
+			select {
+			case <-timer.C:
+				loop = false
+			case msg = <-ch:
+				curr := atomic.AddInt32(&active, -1)
+				if curr <= 0 || msg != nil {
+					timer.Stop()
+					loop = false
+				}
 			}
+		}
+
+		if msg != nil {
+			break
 		}
 	}
 
+	for msg == nil {
+		msg = <-ch
+		if atomic.AddInt32(&active, -1) <= 0 {
+			break
+		}
+	}
+
+	chmu.Lock()
+	for loop := true; loop; {
+		select {
+		case <-ch:
+		default:
+			loop = false
+		}
+	}
+	close(ch)
+	ch = nil
+	chmu.Unlock()
+
+	if msg != nil && w.WriteMsg(msg) == nil {
+		return
+	}
 	dns.HandleFailed(w, r)
 }
 
@@ -108,9 +149,11 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	q := &r.Question[0]
 	if q.Qclass == dns.ClassINET && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) {
 		if s.serveHosts(w, r) {
+			log.Info("Response From Hosts")
 			return
 		}
 	}
 
+	log.Info("Response From External Nameserver")
 	s.serveExtern(w, r)
 }
