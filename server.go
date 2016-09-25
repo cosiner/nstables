@@ -113,10 +113,12 @@ func serveExtern(nameservers []string, timeout time.Duration, r *dns.Msg) *dns.M
 
 	for _, nameserver := range nameservers {
 		atomic.AddInt32(&active, 1)
+
+		ns := nameserver
 		go func() {
-			reply, _, err := c.Exchange(r, nameserver)
+			reply, _, err := c.Exchange(r, ns)
 			if err != nil {
-				log.Println(nameserver, err)
+				log.Println(ns, err)
 			}
 			if ch != nil {
 				chmu.Lock()
