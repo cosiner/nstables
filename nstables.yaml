@@ -1,0 +1,18 @@
+# don't write pid file if empty
+pid: nstables
+
+nets:
+  - tcp
+  - udp
+listen: 127.0.0.1:53
+
+resolvFile: /etc/resolv.conf
+# prefered
+nameservers:
+  - 8.8.8.8
+
+hostsFile: /etc/hosts
+# prefered
+hosts:
+  - 127.0.0.1 foobar.com foobar
+  - 127.0.0.1 barz.com

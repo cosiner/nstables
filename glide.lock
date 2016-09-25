@@ -1,0 +1,37 @@
+hash: 24c3a0688ef086949522492788986972be51dc175d7f48f065bc24f40b4531f6
+updated: 2016-09-25T15:07:26.528268829+08:00
+imports:
+- name: github.com/cosiner/gohper
+  version: ab4e9ff8df39dbdf7db60c8f7560459b049362a7
+  subpackages:
+  - errors
+  - io2
+  - runtime2
+  - strings2
+  - sync2
+  - terminal/color
+  - time2
+  - utils/defval
+  - unsafe2
+  - index
+  - unibyte
+  - ds/set
+- name: github.com/cosiner/ygo
+  version: c002916937333f44879b70e5d29b8321b75f6a5a
+  subpackages:
+  - log
+- name: github.com/mattn/go-colorable
+  version: 9cbef7c35391cca05f15f8181dc0b18bc9736dbb
+  repo: https://github.com/mattn/go-colorable
+- name: github.com/mattn/go-isatty
+  version: 56b76bdf51f7708750eac80fa38b952bb9f32639
+  repo: https://github.com/mattn/go-isatty
+- name: github.com/miekg/dns
+  version: db96a2b759cdef4f11a34506a42eb8d1290c598e
+- name: golang.org/x/sys
+  version: 8f0908ab3b2457e2e15403d3697c9ef5cb4b57a9
+  subpackages:
+  - unix
+- name: gopkg.in/yaml.v2
+  version: 31c299268d302dd0aa9a0dcf765a3d58971ac83f
+testImports: []

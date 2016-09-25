@@ -1,183 +1,188 @@
 package main
 
 import (
-	"bytes"
+	"errors"
 	"flag"
-	"fmt"
 	"io/ioutil"
-	"net"
-	"strings"
-	"sync"
-	"unicode"
+	"log"
+	"os"
+	"syscall"
+	"time"
 
-	"github.com/cosiner/ygo/log"
+	"github.com/cosiner/process"
 	"github.com/miekg/dns"
+	yaml "gopkg.in/yaml.v2"
 )
 
+type Config struct {
+	Nets   []string `yaml:"nets"`
+	Listen string   `yaml:"listen"`
+	Pid    string   `yaml:"pid"`
+
+	TimeoutMs   int      `yaml:"timeoutMs"`
+	ResolvFile  string   `yaml:"resolvFile"`
+	Nameservers []string `yaml:"nameservers"`
+	HostsFile   string   `yaml:"hostsFile"`
+	Hosts       []string `yaml:"hosts"`
+}
+
 var (
-	resolvFile string
-	hostsFile  string
+	conf string
+	sig  string
+	pid  int
 )
 
 func init() {
-	flag.StringVar(&resolvFile, "resolv", "/etc/resolv.conf", "resolv file")
-	flag.StringVar(&hostsFile, "hosts", "/etc/hosts", "hosts file")
+	flag.StringVar(&conf, "c", "nstables.yaml", "configure file in yaml format")
+	flag.StringVar(&sig, "s", "", "signal, stop/reload")
+	flag.IntVar(&pid, "pid", 0, "process pid")
 	flag.Parse()
 }
 
-func trimStrings(ss []string) {
-	for i := range ss {
-		ss[i] = strings.TrimSpace(ss[i])
-	}
-}
-
-func mergeSpace(buf *bytes.Buffer, s string) string {
-	buf.Reset()
-	var hasSpace bool
-	for _, r := range s {
-		if unicode.IsSpace(r) {
-			hasSpace = true
-		} else {
-			if hasSpace {
-				hasSpace = false
-				buf.WriteRune(' ')
-			}
-			buf.WriteRune(r)
-		}
-	}
-	return buf.String()
-}
-
-func removeElement(ss []string, match func(string) bool) []string {
-	var prev int
-	for i := range ss {
-		if !match(ss[i]) {
-			if prev != i {
-				ss[prev] = ss[i]
-			}
-			prev += 1
-		}
-	}
-	return ss[:prev]
-}
-
-func parseNameservers(file, exclude string) ([]string, error) {
-	cfg, err := dns.ClientConfigFromFile(file)
+func parseConfigFile(conf string) (Config, error) {
+	var cfg Config
+	data, err := ioutil.ReadFile(conf)
 	if err != nil {
-		return nil, err
+		return cfg, err
 	}
-
-	var prev int
-	for i, server := range cfg.Servers {
-		if !strings.Contains(server, ":") {
-			server += ":53"
-			cfg.Servers[i] = server
-		}
-		log.Info(server)
-		if server != exclude {
-			if prev != i {
-				cfg.Servers[prev] = cfg.Servers[i]
-			}
-			prev++
-		}
-	}
-
-	return cfg.Servers[:prev], nil
-}
-
-func parseHosts(file string) (map[string][]string, error) {
-	hosts := make(map[string][]string)
-	content, err := ioutil.ReadFile(file)
+	err = yaml.Unmarshal(data, &cfg)
 	if err != nil {
-		return nil, err
+		return cfg, err
 	}
-
-	buf := bytes.NewBuffer(make([]byte, 0, 128))
-	lines := bytes.Split(content, []byte("\n"))
-	for i := range lines {
-		line := strings.TrimSpace(string(lines[i]))
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-
-		line = mergeSpace(buf, line)
-		secs := strings.Split(line, " ")
-		trimStrings(secs)
-		secs = removeElement(secs, func(s string) bool { return s == "" })
-		if len(secs) < 2 {
-			return nil, fmt.Errorf("illegal hostt line: %d, %s", i+1, line)
-		}
-
-		hosts[secs[0]] = secs[1:]
+	if len(cfg.Nets) == 0 {
+		cfg.Nets = []string{"tcp", "udp"}
 	}
-	return hosts, nil
+	return cfg, err
 }
 
-func separateRecords(hosts map[string][]string) (a, aaaa map[string][]net.IP, err error) {
-	a = make(map[string][]net.IP)
-	aaaa = make(map[string][]net.IP)
+func resolveConfig(cfg *Config) (*Server, error) {
+	s := NewServer()
+	if cfg.TimeoutMs <= 0 {
+		cfg.TimeoutMs = 1000
+	}
+	s.Timeout = time.Duration(cfg.TimeoutMs) * time.Millisecond
 
-	for ip, h := range hosts {
-		addr, err := net.ResolveIPAddr("", ip)
+	var err error
+	s.NS, err = parseNameservers(cfg)
+	if err != nil {
+		return s, err
+	}
+	if len(s.NS) == 0 {
+		return s, errors.New("no nameservers available")
+	}
+
+	hosts, err := parseHosts(cfg)
+	if err != nil {
+		return s, err
+	}
+
+	s.A, s.AAAA, err = separateRecords(hosts)
+	return s, nil
+}
+
+func handleSig(cfg *Config) {
+	const (
+		SIG_RELOAD = "reload"
+		SIG_STOP   = "stop"
+	)
+
+	var s os.Signal
+	switch sig {
+	case SIG_RELOAD:
+		s = syscall.SIGUSR1
+	case SIG_STOP:
+		s = syscall.SIGINT
+	default:
+		log.Fatalln("illegal signal:", sig)
+	}
+
+	if pid <= 0 && cfg.Pid != "" {
+		p := process.NewPIDFile(cfg.Pid)
+
+		var err error
+		pid, err = p.Read()
 		if err != nil {
-			return nil, nil, err
-		}
-
-		var m map[string][]net.IP
-		if addr.IP.To4() != nil {
-			m = a
-		} else {
-			m = aaaa
-		}
-		for _, host := range h {
-			host = dns.Fqdn(host)
-			m[host] = append(m[host], addr.IP)
+			log.Fatalln("read pid file failed:", err)
 		}
 	}
-	return a, aaaa, nil
+	if pid <= 0 {
+		log.Fatalln("process id is unknown")
+	}
+
+	err := process.Kill(pid, s)
+	if err != nil {
+		log.Fatalln("send signal failed:", pid, err)
+	}
 }
 
 func main() {
-	addr := "127.0.0.1:53"
-	nameservers, err := parseNameservers(resolvFile, addr)
+	cfg, err := parseConfigFile(conf)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if len(nameservers) == 0 {
-		log.Fatal("no nameservers available")
+	if sig != "" {
+		handleSig(&cfg)
+		return
 	}
 
-	log.Info("Nameservers:", nameservers)
-	hosts, err := parseHosts(hostsFile)
+	s, err := resolveConfig(&cfg)
 	if err != nil {
 		log.Fatal(err)
-	}
-	a, aaaa, err := separateRecords(hosts)
-	if err != nil {
-		log.Fatal(err)
-	}
-	s := Server{
-		A:           a,
-		AAAA:        aaaa,
-		Nameservers: nameservers,
 	}
 
-	var wg sync.WaitGroup
-	for _, net := range []string{"tcp4", "udp4"} {
-		server := dns.Server{
-			Addr:    addr,
-			Net:     net,
-			Handler: &s,
+	if cfg.Pid != "" {
+		pid := process.NewPIDFile(cfg.Pid)
+		err = pid.Write()
+		if err != nil {
+			log.Fatal(err)
 		}
-		wg.Add(1)
+		defer pid.Remove()
+	}
+
+	signal := process.NewSignal()
+	for _, net := range cfg.Nets {
+		server := dns.Server{
+			Addr:    cfg.Listen,
+			Net:     net,
+			Handler: s,
+		}
 		go func() {
-			defer wg.Done()
+			defer signal.Close()
 
 			err := server.ListenAndServe()
 			if err != nil {
-				log.Error(err)
+				log.Println(err)
 			}
 		}()
 	}
-	wg.Wait()
+
+	signal.
+		Exit(syscall.SIGTERM, syscall.SIGINT, syscall.SIGABRT, syscall.SIGQUIT).
+		Default(process.SigIgnore).
+		Ignore(syscall.SIGHUP).
+		Handle(func() bool {
+			err := reload(s)
+			if err != nil {
+				log.Println("reload config failed:", err)
+			} else {
+				log.Println("reload config success.")
+			}
+
+			return true
+		}, syscall.SIGUSR1, syscall.SIGUSR2).
+		Loop()
+}
+
+func reload(s *Server) error {
+	cfg, err := parseConfigFile(conf)
+	if err != nil {
+		return err
+	}
+	sr, err := resolveConfig(&cfg)
+	if err != nil {
+		return err
+	}
+
+	s.Reload(sr)
+	return nil
 }
