@@ -15,14 +15,13 @@ import (
 )
 
 type Config struct {
-	Nets   []string `yaml:"nets"`
-	Listen string   `yaml:"listen"`
-	Pid    string   `yaml:"pid"`
+	Pid     string   `yaml:"pid"`
+	Listens []string `yaml:"listens"`
 
 	TimeoutMs   int      `yaml:"timeoutMs"`
-	ResolvFile  string   `yaml:"resolvFile"`
+	ResolvFiles []string `yaml:"resolvFiles"`
 	Nameservers []string `yaml:"nameservers"`
-	HostsFile   string   `yaml:"hostsFile"`
+	HostsFiles  []string `yaml:"hostsFiles"`
 	Hosts       []string `yaml:"hosts"`
 }
 
@@ -49,8 +48,8 @@ func parseConfigFile(conf string) (Config, error) {
 	if err != nil {
 		return cfg, err
 	}
-	if len(cfg.Nets) == 0 {
-		cfg.Nets = []string{"tcp", "udp"}
+	if len(cfg.Listens) == 0 {
+		return cfg, errors.New("no address to listening")
 	}
 	return cfg, err
 }
@@ -140,10 +139,11 @@ func main() {
 	}
 
 	signal := process.NewSignal()
-	for _, net := range cfg.Nets {
+	for _, lis := range cfg.Listens {
+		net, addr := splitNetAddr(lis)
 		server := dns.Server{
-			Addr:    cfg.Listen,
 			Net:     net,
+			Addr:    completeDNSPort(addr),
 			Handler: s,
 		}
 		go func() {

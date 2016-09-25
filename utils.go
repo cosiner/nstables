@@ -11,6 +11,13 @@ import (
 	"github.com/miekg/dns"
 )
 
+func completeDNSPort(addr string) string {
+	if !strings.Contains(addr, ":") {
+		addr += ":53"
+	}
+	return addr
+}
+
 func trimStrings(ss []string) {
 	for i := range ss {
 		ss[i] = strings.TrimSpace(ss[i])
@@ -48,10 +55,16 @@ func removeElement(ss []string, match func(string) bool) []string {
 }
 
 func parseNameservers(cfg *Config) ([]string, error) {
+	listenNs := make(map[string]bool)
+	for _, lis := range cfg.Listens {
+		_, addr := splitNetAddr(lis)
+		listenNs[completeDNSPort(addr)] = true
+	}
+
 	servers := cfg.Nameservers
 
-	if cfg.ResolvFile != "" {
-		c, err := dns.ClientConfigFromFile(cfg.ResolvFile)
+	for _, file := range cfg.ResolvFiles {
+		c, err := dns.ClientConfigFromFile(file)
 		if err != nil {
 			return nil, err
 		}
@@ -63,12 +76,10 @@ func parseNameservers(cfg *Config) ([]string, error) {
 		added = make(map[string]bool)
 	)
 	for i, server := range servers {
-		if !strings.Contains(server, ":") {
-			server += ":53"
-			servers[i] = server
-		}
+		server = completeDNSPort(server)
+		servers[i] = server
 
-		if server != cfg.Listen && !added[server] {
+		if !listenNs[server] && !added[server] {
 			added[server] = true
 			if prev != i {
 				servers[prev] = servers[i]
@@ -83,9 +94,9 @@ func parseNameservers(cfg *Config) ([]string, error) {
 func parseHosts(cfg *Config) (map[string][]string, error) {
 	hosts := make(map[string][]string)
 
-	lines := cfg.Hosts
-	if cfg.HostsFile != "" {
-		c, err := ioutil.ReadFile(cfg.HostsFile)
+	var lines []string
+	for _, file := range cfg.HostsFiles {
+		c, err := ioutil.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}
@@ -94,6 +105,7 @@ func parseHosts(cfg *Config) (map[string][]string, error) {
 			lines = append(lines, strings.Split(content, "\n")...)
 		}
 	}
+	lines = append(lines, cfg.Hosts...)
 
 	buf := bytes.NewBuffer(make([]byte, 0, 128))
 	for i := range lines {
@@ -136,4 +148,12 @@ func separateRecords(hosts map[string][]string) (a, aaaa map[string][]net.IP, er
 		}
 	}
 	return a, aaaa, nil
+}
+
+func splitNetAddr(s string) (net, addr string) {
+	secs := strings.SplitN(s, "://", 2)
+	if len(secs) == 1 {
+		return "udp", secs[0]
+	}
+	return secs[0], secs[1]
 }
