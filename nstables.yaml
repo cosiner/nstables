@@ -5,8 +5,6 @@ pid: nstables
 listens:
   - tcp://127.0.0.1
   - udp://127.0.0.1
-  - udp://192.168.1.111
-  - tcp://192.168.1.111
 
 resolvFiles:
   - /etc/resolv.conf
@@ -20,3 +18,7 @@ hostsFiles:
 hosts:
   - 127.0.0.1 foobar.com foobar
   - 127.0.0.1 barz.com
+
+cache:
+  size: 2048
+  expireSecond: 300

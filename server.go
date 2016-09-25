@@ -11,6 +11,8 @@ import (
 )
 
 type Server struct {
+	cache Cache
+
 	mu      sync.RWMutex
 	Timeout time.Duration
 	A       map[string][]net.IP
@@ -18,8 +20,13 @@ type Server struct {
 	NS      []string
 }
 
-func NewServer() *Server {
-	return &Server{}
+func NewServer(cacheSize int, cacheExpire time.Duration) *Server {
+	if cacheExpire <= 0 {
+		cacheExpire = 300 * time.Second
+	}
+	return &Server{
+		cache: NewMemCache(cacheSize, cacheExpire),
+	}
 }
 
 func (s *Server) Reload(sr *Server) {
@@ -57,35 +64,44 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	q := &r.Question[0]
-	q.Name = dns.Fqdn(q.Name)
-	if q.Qclass == dns.ClassINET {
-		isA := q.Qtype == dns.TypeA
-		isAAAA := q.Qtype == dns.TypeAAAA
+	var (
+		msg *dns.Msg
+		q   = &r.Question[0]
+	)
 
-		if (isA || isAAAA) &&
-			serveHosts(s.ips(q.Name, isA), isA, w, r) {
-			return
+	q.Name = dns.Fqdn(q.Name)
+	if q.Qclass == dns.ClassINET && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) {
+		isA := q.Qtype == dns.TypeA
+		msg = serveHosts(s.ips(q.Name, isA), isA, r)
+	}
+
+	if msg == nil {
+		cacheKey := questionKey(q)
+		msg = s.cache.Get(cacheKey)
+		if msg == nil {
+			ns, timeout := s.nsAndTimeout()
+			msg = serveExtern(ns, timeout, r)
+			if msg != nil {
+				s.cache.Set(cacheKey, msg)
+			}
 		}
 	}
 
-	ns, timeout := s.nsAndTimeout()
-	serveExtern(ns, timeout, w, r)
+	writeMsg(w, r, msg)
 }
 
-func serveHosts(ips []net.IP, isA bool, w dns.ResponseWriter, r *dns.Msg) bool {
+func serveHosts(ips []net.IP, isA bool, r *dns.Msg) *dns.Msg {
 	if len(ips) == 0 {
-		return false
+		return nil
 	}
 	var m dns.Msg
 	m.SetReply(r)
 	m.Answer = answers(r.Question[0].Name, ips, isA)
 
-	writeMsg(w, r, &m)
-	return true
+	return &m
 }
 
-func serveExtern(nameservers []string, timeout time.Duration, w dns.ResponseWriter, r *dns.Msg) {
+func serveExtern(nameservers []string, timeout time.Duration, r *dns.Msg) *dns.Msg {
 	var (
 		c   dns.Client
 		msg *dns.Msg
@@ -150,10 +166,11 @@ func serveExtern(nameservers []string, timeout time.Duration, w dns.ResponseWrit
 	ch = nil
 	chmu.Unlock()
 
-	if msg != nil && w.WriteMsg(msg) == nil {
-		return
-	}
-	dns.HandleFailed(w, r)
+	return msg
+}
+
+func questionKey(q *dns.Question) string {
+	return q.String()
 }
 
 func answers(name string, ips []net.IP, a bool) []dns.RR {
@@ -184,7 +201,7 @@ func answers(name string, ips []net.IP, a bool) []dns.RR {
 }
 
 func writeMsg(w dns.ResponseWriter, r, m *dns.Msg) {
-	if w.WriteMsg(m) != nil {
+	if m == nil || w.WriteMsg(m) != nil {
 		dns.HandleFailed(w, r)
 	}
 }

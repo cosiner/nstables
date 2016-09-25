@@ -23,6 +23,10 @@ type Config struct {
 	Nameservers []string `yaml:"nameservers"`
 	HostsFiles  []string `yaml:"hostsFiles"`
 	Hosts       []string `yaml:"hosts"`
+	Cache       struct {
+		Size         int `yaml:"size"`
+		ExpireSecond int `yaml:"expireSecond"`
+	} `yaml:"cache"`
 }
 
 var (
@@ -55,7 +59,7 @@ func parseConfigFile(conf string) (Config, error) {
 }
 
 func resolveConfig(cfg *Config) (*Server, error) {
-	s := NewServer()
+	s := NewServer(cfg.Cache.Size, time.Duration(cfg.Cache.ExpireSecond)*time.Second)
 	if cfg.TimeoutMs <= 0 {
 		cfg.TimeoutMs = 1000
 	}
@@ -178,6 +182,7 @@ func reload(s *Server) error {
 	if err != nil {
 		return err
 	}
+	cfg.Cache.Size = 0
 	sr, err := resolveConfig(&cfg)
 	if err != nil {
 		return err
