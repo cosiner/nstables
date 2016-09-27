@@ -98,7 +98,9 @@ func (m *memCache) remove(index int, now time.Time) int {
 	}
 
 	for i := m.begin; i <= expireIndex; i++ {
-		delete(m.keys, m.msgs[m.realIndex(i)].key)
+		msg := &m.msgs[m.realIndex(i)]
+		msg.msg = nil
+		delete(m.keys, msg.key)
 	}
 	m.begin = m.realIndex(expireIndex + 1)
 	return expireIndex - index + 1
