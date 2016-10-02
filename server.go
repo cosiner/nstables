@@ -58,6 +58,12 @@ func (s *Server) nsAndTimeout() ([]string, time.Duration) {
 	return servers, timeout
 }
 
+func copyForReply(r, msg *dns.Msg) *dns.Msg {
+	n := *msg
+	n.Id = r.Id
+	return &n
+}
+
 func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if len(r.Question) < 1 {
 		dns.HandleFailed(w, r)
@@ -83,7 +89,10 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			msg = serveExtern(ns, timeout, r)
 			if msg != nil {
 				s.cache.Set(cacheKey, msg)
+				msg = copyForReply(r, msg)
 			}
+		} else {
+			msg = copyForReply(r, msg)
 		}
 	}
 
