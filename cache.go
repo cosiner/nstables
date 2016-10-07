@@ -35,7 +35,7 @@ type memCache struct {
 	cap    int
 	expire time.Duration
 
-	mu   sync.RWMutex
+	mu   sync.Mutex
 	keys map[string]int
 	// ring buffer
 	begin int
@@ -48,7 +48,7 @@ func (m *memCache) Get(key string) (dmsg *dns.Msg) {
 		return nil
 	}
 
-	m.mu.RLock()
+	m.mu.Lock()
 	index, has := m.keys[key]
 	if has {
 		msg := m.msgs[index]
@@ -59,7 +59,7 @@ func (m *memCache) Get(key string) (dmsg *dns.Msg) {
 			dmsg = msg.msg
 		}
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 	return dmsg
 }
 func (m *memCache) realIndex(i int) int {
