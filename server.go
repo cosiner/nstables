@@ -81,13 +81,24 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		msg = serveHosts(s.ips(q.Name, isA), isA, r)
 	}
 
+	var netname string
+	switch w.LocalAddr().(type) {
+	case *net.TCPAddr:
+		netname = "tcp"
+	case *net.UDPAddr:
+		netname = "udp"
+	default:
+		dns.HandleFailed(w, r)
+		return
+	}
 	if msg == nil {
-		cacheKey := questionKey(q)
+		cacheKey := netname + ":" + questionKey(q)
 		msg = s.cache.Get(cacheKey)
 		if msg == nil {
 			ns, timeout := s.nsAndTimeout()
-			msg = serveExtern(ns, timeout, r)
+			msg = serveExtern(ns, timeout, netname, r)
 			if msg != nil {
+				msg.Compress = true
 				s.cache.Set(cacheKey, msg)
 				msg = copyForReply(r, msg)
 			}
@@ -95,7 +106,13 @@ func (s *Server) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 			msg = copyForReply(r, msg)
 		}
 	}
-
+	if msg != nil {
+		msg.Compress = true
+		if netname == "udp" && msg.Len() > 512 {
+			msg.Truncated = true
+			msg.Answer = nil
+		}
+	}
 	writeMsg(w, r, msg)
 }
 
@@ -110,9 +127,11 @@ func serveHosts(ips []net.IP, isA bool, r *dns.Msg) *dns.Msg {
 	return &m
 }
 
-func serveExtern(nameservers []string, timeout time.Duration, r *dns.Msg) *dns.Msg {
+func serveExtern(nameservers []string, timeout time.Duration, net string, r *dns.Msg) *dns.Msg {
 	var (
-		c   dns.Client
+		c = dns.Client{
+			Net: net,
+		}
 		msg *dns.Msg
 
 		chmu   sync.Mutex
